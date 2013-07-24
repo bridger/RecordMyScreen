@@ -32,7 +32,6 @@ void CARenderServerRenderDisplay(kern_return_t a, CFStringRef b, IOSurfaceRef su
     
     dispatch_queue_t    _videoQueue;
     
-    NSLock             *_pixelBufferLock;
     NSTimer            *_recordingTimer;
     NSDate             *_recordStartDate;
 	
@@ -61,8 +60,6 @@ void CARenderServerRenderDisplay(kern_return_t a, CFStringRef b, IOSurfaceRef su
 - (instancetype)init
 {
     if ((self = [super init])) {
-        _pixelBufferLock = [NSLock new];
-        
         //video queue
         _videoQueue = dispatch_queue_create("video_queue", DISPATCH_QUEUE_SERIAL);
         //frame rate
@@ -80,9 +77,6 @@ void CARenderServerRenderDisplay(kern_return_t a, CFStringRef b, IOSurfaceRef su
     
     dispatch_release(_videoQueue);
     _videoQueue = NULL;
-    
-    [_pixelBufferLock release];
-    _pixelBufferLock = nil;
     
     [_videoOutPath release];
     _videoOutPath = nil;
@@ -222,7 +216,6 @@ void CARenderServerRenderDisplay(kern_return_t a, CFStringRef b, IOSurfaceRef su
     
     _isRecording = YES;
 
-#if 1
     //capture loop (In another thread)
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 		_recordStartTime = [NSDate timeIntervalSinceReferenceDate];
@@ -230,62 +223,8 @@ void CARenderServerRenderDisplay(kern_return_t a, CFStringRef b, IOSurfaceRef su
 		
 		[self continueRecording];
 	});
-#endif
-#if 0
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        int targetFPS = _fps;
-        int msBeforeNextCapture = 1000 / targetFPS;
-        int lastFrame = -1;
-        struct timeval lastCapture, currentTime, startTime;
-		
-        lastCapture.tv_sec = 0;
-        lastCapture.tv_usec = 0;
-        
-        //recording start time
-        gettimeofday(&startTime, NULL);
-        startTime.tv_usec /= 1000;
-        
-        while(_isRecording)
-        {
-            //time passed since last capture
-            gettimeofday(&currentTime, NULL);
-            
-            //convert to milliseconds to avoid overflows
-            currentTime.tv_usec /= 1000;
-            
-            unsigned long long diff = (currentTime.tv_usec + (1000 * currentTime.tv_sec) ) - (lastCapture.tv_usec + (1000 * lastCapture.tv_sec) );
-            
-            // if enough time has passed, capture another shot
-            if(diff >= msBeforeNextCapture)
-            {
-                //time since start
-                long int msSinceStart = (currentTime.tv_usec + (1000 * currentTime.tv_sec) ) - (startTime.tv_usec + (1000 * startTime.tv_sec) );
-                
-                // Generate the frame number
-                int frameNumber = msSinceStart / msBeforeNextCapture;
-                CMTime presentTime;
-                presentTime = CMTimeMake(frameNumber, targetFPS);
-                
-                // Frame number cannot be last frames number :P
-                NSParameterAssert(frameNumber != lastFrame);
-                lastFrame = frameNumber;
-                
-                // Capture next shot and repeat
-                [self _captureShot:presentTime];
-                lastCapture = currentTime;
-            }
-        }
-        
-        // finish encoding, using the video_queue thread
-        dispatch_async(_videoQueue, ^{
-            [self _finishEncoding];
-        });
-        
-    });
-#endif
 }
 
-#if 1
 - (void)_captureShot:(CMTime)frameTime
 {
     // Create an IOSurfaceRef if one does not exist
@@ -325,100 +264,6 @@ void CARenderServerRenderDisplay(kern_return_t a, CFStringRef b, IOSurfaceRef su
 		NSLog(@"skipping frame: %lld", frameTime.value);
 	}
 }
-#endif
-
-#if 0
-- (void)_captureShot:(CMTime)frameTime
-{
-    // Create an IOSurfaceRef if one does not exist
-    if(!_surface) {
-        _surface = [self _createScreenSurface];
-    }
-    
-    // Lock the surface from other threads
-    static NSMutableArray * buffers = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        buffers = [[NSMutableArray alloc] init];
-    });
-    
-    IOSurfaceLock(_surface, 0, nil);
-    // Take currently displayed image from the LCD
-    CARenderServerRenderDisplay(0, CFSTR("LCD"), _surface, 0, 0);
-    // Unlock the surface
-    IOSurfaceUnlock(_surface, 0, 0);
-    
-    // Make a raw memory copy of the surface
-    void *baseAddr = IOSurfaceGetBaseAddress(_surface);
-    int totalBytes = _bytesPerRow * _height;
-    
-    //void *rawData = malloc(totalBytes);
-    //memcpy(rawData, baseAddr, totalBytes);
-    NSMutableData * rawDataObj = nil;
-    if (buffers.count == 0)
-        rawDataObj = [[NSMutableData dataWithBytes:baseAddr length:totalBytes] retain];
-    else @synchronized(buffers) {
-        rawDataObj = [buffers lastObject];
-        memcpy((void *)[rawDataObj bytes], baseAddr, totalBytes);
-        //[rawDataObj replaceBytesInRange:NSMakeRange(0, rawDataObj.length) withBytes:baseAddr length:totalBytes];
-        [buffers removeLastObject];
-    }
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if(!_pixelBufferAdaptor.pixelBufferPool){
-            NSLog(@"skipping frame: %lld", frameTime.value);
-            //free(rawData);
-            @synchronized(buffers) {
-                //[buffers addObject:rawDataObj];
-            }
-            return;
-        }
-        
-        static CVPixelBufferRef pixelBuffer = NULL;
-        
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            NSParameterAssert(_pixelBufferAdaptor.pixelBufferPool != NULL);
-            [_pixelBufferLock lock];
-            CVPixelBufferPoolCreatePixelBuffer (kCFAllocatorDefault, _pixelBufferAdaptor.pixelBufferPool, &pixelBuffer);
-            [_pixelBufferLock unlock];
-            NSParameterAssert(pixelBuffer != NULL);
-        });
-        
-        //unlock pixel buffer data
-        CVPixelBufferLockBaseAddress(pixelBuffer, 0);
-        void *pixelData = CVPixelBufferGetBaseAddress(pixelBuffer);
-        NSParameterAssert(pixelData != NULL);
-        
-        //copy over raw image data and free
-        memcpy(pixelData, [rawDataObj bytes], totalBytes);
-        //free(rawData);
-        @synchronized(buffers) {
-            [buffers addObject:rawDataObj];
-        }
-        
-        //unlock pixel buffer data
-        CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
-        
-        dispatch_async(_videoQueue, ^{
-            // Wait until AVAssetWriterInput is ready
-            while(_videoWriterInput != nil && !_videoWriterInput.readyForMoreMediaData)
-                usleep(1000);
-            
-			if (_videoWriterInput != nil) {
-				// Lock from other threads
-				[_pixelBufferLock lock];
-				// Add the new frame to the video
-				[_pixelBufferAdaptor appendPixelBuffer:pixelBuffer withPresentationTime:frameTime];
-				
-				// Unlock
-				//CVPixelBufferRelease(pixelBuffer);
-				[_pixelBufferLock unlock];
-			}
-        });
-    });
-}
-#endif
 
 - (IOSurfaceRef)_createScreenSurface
 {
