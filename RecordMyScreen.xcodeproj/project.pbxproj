@@ -610,8 +610,6 @@
 					CoreSurface,
 					"-framework",
 					IOMobileFramebuffer,
-					"-framework",
-					IOKit,
 				);
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -643,8 +641,6 @@
 					CoreSurface,
 					"-framework",
 					IOMobileFramebuffer,
-					"-framework",
-					IOKit,
 				);
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
